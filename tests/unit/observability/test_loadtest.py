@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -734,6 +735,30 @@ def test_a_failed_run_renders_its_breaches() -> None:
     rendered = render_markdown(report)
     assert "**Result: FAIL**" in rendered
     assert "500.0ms" in rendered
+
+
+async def test_a_lowered_throughput_budget_reaches_the_assertion() -> None:
+    """The `--min-throughput` override must actually change the verdict.
+
+    CI runs a shared runner at a lower rate than the budget's 400/sec, so the
+    workflow passes `--min-throughput`. That flag is only worth having if it is
+    connected to `Budget`: a parsed-and-ignored argument breaches anyway, and the
+    first CI run did exactly that.
+    """
+    lowered = replace(Budget(), min_throughput_per_sec=0.0)
+
+    report = await run_load_test(target_rate=200, duration_seconds=1.5, budget=lowered)
+
+    assert not any("throughput" in breach for breach in report["breaches"]), (
+        f"a zero throughput budget cannot breach: {report['breaches']}"
+    )
+
+
+async def test_the_default_budget_is_what_runs_when_no_override_is_given() -> None:
+    """The override is opt-in, so the committed default still guards a local run."""
+    report = await run_load_test(target_rate=200, duration_seconds=1.5)
+
+    assert "passed" in report, "the report must state a verdict either way"
 
 
 _ = Path

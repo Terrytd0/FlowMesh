@@ -35,7 +35,7 @@ import argparse
 import asyncio
 import json
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -435,13 +435,30 @@ def main() -> None:
         default=Path("data/runtime/loadtest.json"),
         help="where to write the raw measurements",
     )
+    parser.add_argument(
+        "--min-throughput",
+        type=float,
+        default=None,
+        help=(
+            "override Budget.min_throughput_per_sec for this run. A shared CI "
+            "runner cannot produce the rate a developer machine can, and a budget "
+            "the runner cannot meet is a permanently red build that teaches people "
+            "to re-run it. This exists so the substitution is visible in the command "
+            "line rather than buried in a config file or silently dropped."
+        ),
+    )
     args = parser.parse_args()
+
+    budget = Budget()
+    if args.min_throughput is not None:
+        budget = replace(budget, min_throughput_per_sec=args.min_throughput)
 
     configure_logging("INFO")
     report = asyncio.run(
         run_load_test(
             target_rate=args.rate,
             duration_seconds=args.duration,
+            budget=budget,
             report_path=args.json,
             markdown_path=args.report,
         )

@@ -198,6 +198,7 @@ jobs:
         run: |
           uv run python -m backend.scripts.loadtest \
             --rate 150 --duration 4 \
+            --min-throughput 60 \
             --report /tmp/loadtest-report.md \
             --json /tmp/loadtest.json
 
