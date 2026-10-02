@@ -110,6 +110,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # `uvx` below runs grpcio-tools to recompile the proto, and `uvx` is
+      # provided by uv. The image build and healthcheck steps do not need it,
+      # so it is easy to miss -- and the symptom is exit 127 (`uvx: command not
+      # found`) in a step that looks like it is testing the proto.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
       - name: Build
         run: docker build -t flowmesh:ci .
 

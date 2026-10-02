@@ -19,6 +19,8 @@ from typing import Any
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 CREDENTIALS = [
     ("customer@example.com", "customer-pass", "customer"),
     ("supervisor@example.com", "supervisor-pass", "supervisor"),

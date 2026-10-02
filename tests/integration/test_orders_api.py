@@ -21,6 +21,8 @@ from typing import Any
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 ORDER_BODY: dict[str, Any] = {
     "customer_id": "CUST-1",
     "items": [{"sku": "SKU-TSHIRT-M", "quantity": 2, "unit_price_cents": 2400}],
