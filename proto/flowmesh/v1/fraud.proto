@@ -1,0 +1,110 @@
+syntax = "proto3";
+
+// FlowMesh fraud scoring: the typed boundary between the order pipeline and the
+// service that decides whether an order is worth a human's time.
+//
+// Generated output lands in backend/grpc_service/generated/ and is committed.
+// Change this file and run `make proto`; never edit the generated modules
+// (they are excluded from ruff and mypy, and nothing warns you when they drift
+// out of date -- the suite fails on an import error instead).
+
+package flowmesh.v1;
+
+option go_package = "github.com/cascade-retail/flowmesh/gen/flowmesh/v1;flowmeshv1";
+
+// The scoring service. One RPC per decision, plus a health probe.
+//
+// Deliberately not a streaming RPC and not a bidirectional conversation: this
+// call sits on the per-order hot path with a p95 budget of 200ms, and every
+// streaming feature of gRPC (flow control, reconnection, half-close semantics)
+// buys latency that budget cannot afford. The interesting state -- the rolling
+// per-customer window -- lives server-side, so the wire stays small.
+service FraudScoring {
+  rpc ScoreOrder(FraudRequest) returns (FraudResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+// A purchased line. No price: the fraud model must not see a price, or it
+// learns "high value means fraud" and rejects every legitimate large order.
+message LineItem {
+  string sku = 1;
+  int32 quantity = 2;
+}
+
+// Payment context, in the four-country form described in
+// backend/events/schema.py::PaymentDetails.
+message PaymentContext {
+  string card_bin = 1;
+  string card_last4 = 2;
+  string card_country = 3;
+  string billing_country = 4;
+  string shipping_country = 5;
+  string ip_country = 6;
+  string coupon_code = 7;
+  bool is_gift_card = 8;
+}
+
+message FraudRequest {
+  string order_id = 1;
+  string customer_id = 2;
+  repeated LineItem items = 3;
+  PaymentContext payment = 4;
+  int64 total_cents = 5;
+  // RFC 3339, UTC. Read by the scorer for the time-of-day feature and for the
+  // velocity window, so a clock skew between producer and scorer changes a
+  // feature rather than silently changing which window an order falls into.
+  string received_at = 6;
+  string correlation_id = 7;
+  // Set false on the fast path. The scorer spends an LLM call only when the
+  // score lands in the ambiguous band AND the caller asked for a rationale, so
+  // a caller that does not want to pay for reasoning never triggers it.
+  bool require_rationale = 8;
+}
+
+enum RiskBand {
+  RISK_BAND_UNSPECIFIED = 0;
+  RISK_BAND_LOW = 1;
+  RISK_BAND_AMBIGUOUS = 2;
+  RISK_BAND_HIGH = 3;
+}
+
+// One feature's contribution to the score. Returned so the dashboard can answer
+// "why was this order held" without re-running the model, which is the question
+// every fraud-ops team asks in the first five minutes of a new system.
+message ScoreContribution {
+  string feature = 1;
+  double value = 2;
+  double weight = 3;
+  double contribution = 4;
+}
+
+message FraudResponse {
+  string order_id = 1;
+  // Calibrated probability of fraud, 0..1.
+  double score = 2;
+  RiskBand band = 3;
+  // Machine-readable reason codes, ordered by contribution.
+  repeated string reasons = 4;
+  // Human-readable explanation. On the fast path this is the deterministic
+  // narrative; on the ambiguous band it may be the LLM's, when enabled.
+  string rationale = 5;
+  string model_version = 6;
+  double latency_ms = 7;
+  // True when the real model could not be loaded and a conservative fallback
+  // scored the order. The pipeline treats degraded decisions as never
+  // auto-approvable.
+  bool degraded = 8;
+  bool llm_used = 9;
+  repeated ScoreContribution contributions = 10;
+  map<string, double> features = 11;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool ready = 1;
+  string model_version = 2;
+  uint64 orders_scored = 3;
+  // How many orders are currently inside the scoring service's rolling window.
+  uint32 tracked_customers = 4;
+}

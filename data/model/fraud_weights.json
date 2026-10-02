@@ -1,0 +1,20 @@
+{
+  "version": "flowmesh-fraud-v4",
+  "trained_at": "2026-09-27",
+  "intercept": -2.45,
+  "weights": {
+    "amount_zscore": 1.05,
+    "velocity": 0.85,
+    "basket_size": 0.2,
+    "country_mismatch": 2.0,
+    "card_country_mismatch": 1.95,
+    "ip_country_mismatch": 1.9,
+    "first_order": 0.55,
+    "night_hour": 0.25,
+    "coupon_first_order": 0.7,
+    "gift_card": 0.6,
+    "prior_chargebacks": 1.4,
+    "bin_change": 0.75
+  },
+  "notes": "Hand-tuned logistic weights over the 12 features in backend/fraud/features.py, fitted by hand against the labelled sample corpus in data/samples/label_set.jsonl (420 labelled orders, 60 of them fraud). The point of this file is not that the weights are optimal -- it is that they are legible, fixed and inspectable, so a fraud analyst can argue with 'country_mismatch = 2.0' in a way they cannot argue with a gradient-boosted ensemble. The intercept encodes the base rate: at -2.45 a featureless order scores 0.079, which is roughly Cascade Retail's fraud rate. The three geographic weights are all above 1.8 because each one alone has to clear the 0.35 review threshold -- one country mismatch is the whole signal, and a customer with a mismatched billing and shipping country gets no second chances. Replace this file with the output of a real training run and nothing in the pipeline changes."
+}

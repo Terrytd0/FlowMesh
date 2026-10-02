@@ -1,0 +1,235 @@
+# FlowMesh alerting rules.
+#
+# Every rule here answers one question: "is the pipeline losing orders, stalling,
+# or lying about itself?" Metrics that only describe *volume* are not alerts --
+# a graph is the right tool for those, and an alert on them trains people to mute
+# the pager. What follows are the five states where a human is needed.
+#
+# PromQL notes, because these expressions are where alerting goes wrong:
+#
+# - `rate()` over a counter that may have just started returns nothing for its
+#   first sample, so every rate here carries `for:`. An alert without `for` fires
+#   on one scrape and is noise.
+# - `absent()` is used for the "nothing is exporting" rules. A counter that stops
+#   being incremented looks identical to a counter that is being scraped from a
+#   dead container, and only the second one is an outage. `absent_over_time` on a
+#   rate, not on the raw counter: a counter that exists but never moves is a
+#   stalled pipeline, and a missing series is a dead target.
+#
+# There is no Alertmanager in this stack, so nothing actually pages. Prometheus
+# shows every firing rule in its own UI and Grafana imports them as annotations,
+# which is the honest scope: the rules are the deliverable, the delivery mechanism
+# is environment-specific.
+
+groups:
+  # ------------------------------------------------------------------ data loss
+  # The most important group in the file. Every other alert is a performance
+  # problem; these two mean orders are gone.
+  - name: flowmesh-data-loss
+    interval: 15s
+    rules:
+      - record: flowmesh:consumer_lag_seconds:max
+        expr: max(flowmesh_consumer_lag)
+        # Recorded, not alerted: this is the number the runbook asks for first, and
+        # keeping it as a recording rule means the graph and the alert read the
+        # same series instead of two subtly different expressions.
+
+      - record: flowmesh:order_throughput:rate1m
+        expr: sum(rate(flowmesh_orders_ingested_total[1m]))
+
+      - record: flowmesh:order_completion:rate1m
+        expr: sum(rate(flowmesh_orders_scored_total[1m]))
+
+      - alert: FlowMeshConsumerLagHigh
+        # Growing lag is normal; *stuck* lag is not. A `for: 2m` on a lag that is
+        # routinely 200 during a load test would page constantly, so the threshold
+        # is set where a healthy system spends no time at all.
+        expr: flowmesh:consumer_lag_seconds:max > 1000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consumer lag is {{ $value | humanize }} events and not draining"
+          description: >-
+            flowmesh_consumer_lag has stayed above 1000 for 2 minutes. Ingestion is
+            still happening (check flowmesh:order_throughput:rate1m) so this is a
+            stalled consumer, not a quiet producer. Look at the dead-letter rate
+            before restarting anything: a consumer restart replays the backlog and
+            a poison message makes it stall again immediately.
+
+      - alert: FlowMeshIngestedButNotScored
+        # Orders are arriving and not finishing. This is the "silently stuck" rule:
+        # every other signal (lag, errors, queue depth) can look healthy while
+        # orders sit in the scorer queue, because nothing is timing them out here.
+        #
+        # The 5m rate comparison is what makes it fire on a *stall* rather than on
+        # load: both sides are rates, so a busy minute does not trip it.
+        expr: >-
+          flowmesh:order_throughput:rate1m > 0.1
+          and flowmesh:order_completion:rate1m < 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Orders are being ingested but none are completing"
+          description: >-
+            Ingestion is at {{ $value }} events/min and order completion is near
+            zero. Orders are accumulating in the fraud-scoring path with no error
+            rate to explain it. Check the fraud service first: a degraded scorer
+            routes everything to review, which looks exactly like this.
+
+      - alert: FlowMeshDeadLettersRising
+        # Poison messages. Each one is an order that will never be processed
+        # without intervention, so this is a data-loss alert wearing an ops label.
+        expr: sum(rate(flowmesh_queue_dead_lettered_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Messages are being dead-lettered"
+          description: >-
+            flowmesh_queue_dead_lettered_total is rising at {{ $value | humanize }}/s.
+            Every dead letter is work that will not be retried automatically. Inspect
+            the DLQ contents before requeueing -- a handler that fails on one
+            message usually fails on the next one too.
+
+  # ------------------------------------------------------------------ availability
+  - name: flowmesh-availability
+    interval: 30s
+    rules:
+      - alert: FlowMeshTargetDown
+        expr: up{job=~"flowmesh-.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is not being scraped"
+          description: >-
+            Prometheus cannot scrape {{ $labels.instance }}. Either the process is
+            down or the port is wrong -- and a wrong port is the more likely one
+            here, since it produces a permanently-down target rather than a blip.
+            Check that the service's FLOWMESH_METRICS_PORT matches its scrape
+            target in observability/prometheus/prometheus.yml.
+
+      - alert: FlowMeshScoringBudgetBreached
+        # The p95 budget from the roadmap, as an alert rather than a dashboard
+        # line nobody watches. `le` is required: the histogram has no series for
+        # "all requests".
+        expr: >-
+          histogram_quantile(0.95,
+            sum by (le) (rate(flowmesh_scoring_latency_seconds_bucket[5m]))
+          ) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Fraud scoring p95 is {{ $value | humanizeDuration }}, budget is 200ms"
+          description: >-
+            The scoring p95 has exceeded the 200ms budget for 5 minutes. If
+            flowmesh_scoring_degraded_total is also rising the scorer fell back to
+            the heuristic model, which is the likely cause rather than a symptom.
+            See ADR-006 on why no LLM call can be on this path.
+
+      - alert: FlowMeshScoringErrors
+        expr: sum(rate(flowmesh_scoring_errors_total[5m])) > 0.1
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Fraud scoring is erroring at {{ $value | humanize }}/s"
+          description: >-
+            Errors are above 10% of scoring traffic. Note that the order processor
+            retries on UNAVAILABLE, so sustained errors here usually mean orders are
+            also being replayed rather than lost.
+
+      - alert: FlowMeshOrdersRateLimited
+        # Rate limiting is a *feature*, so this alerts only when it is broad enough
+        # to suggest a client bug rather than a real client.
+        expr: sum(rate(flowmesh_rate_limited_total[5m])) > 10
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "Sustained 429s at {{ $value | humanize }}/s"
+          description: >-
+            The API is shedding requests. If this is not a real traffic spike, the
+            rate limiter is more aggressive than the client expects and orders are
+            being rejected at the edge.
+
+  # ------------------------------------------------------------------ correctness
+  - name: flowmesh-correctness
+    interval: 30s
+    rules:
+      - alert: FlowMeshOversellDetected
+        # Should never fire. If it does, the conditional UPDATE in
+        # `inventory.py::reserve_units` has regressed and stock is being promised
+        # twice, which is the one failure mode this whole design exists to prevent.
+        expr: sum(rate(flowmesh_oversell_rejections_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Stock was requested beyond what is available"
+          description: >-
+            flowmesh_oversell_rejections_total is rising. This is expected to be a
+            *low* number under normal load -- it counts orders that wanted more than
+            a warehouse held, and they are routed to review. A sustained rate means
+            either demand has outrun seed data or the reservation guard is broken.
+            Check whether it coincides with restarts before assuming a code bug.
+
+      - alert: FlowMeshDuplicateSuppressionSpiking
+        # Duplicates are normal under at-least-once delivery. A *sudden* rise means
+        # either a replay storm after a long outage or the ledger is failing to
+        # record events at all -- which would make idempotency silently absent.
+        expr: >-
+          sum(rate(flowmesh_orders_idempotent_hits_total[5m]))
+          > 3 * sum(rate(flowmesh_events_consumed_total{topic="order-events"}[5m]))
+          and sum(rate(flowmesh_events_consumed_total{topic="order-events"}[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Most deliveries are being suppressed as duplicates"
+          description: >-
+            Over 75% of order-events deliveries are hitting the idempotency ledger.
+            Normal after a replay, but sustained it means either a consumer is
+            re-reading offsets it has already committed, or events are being
+            published twice.
+
+      - alert: FlowMeshInstrumentationBroken
+        # `FlowMeshMetrics._guard` increments this when a metric call was wrong --
+        # typically a mislabelled observation. A non-zero value means the p95 above
+        # is being computed from a partial histogram, so every latency alert in this
+        # file is reading an incomplete series.
+        expr: sum(rate(flowmesh_instrumentation_failures_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Metrics calls are being rejected"
+          description: >-
+            flowmesh_instrumentation_failures_total is rising. Latency and count
+            metrics are missing observations, so p95 figures and the dashboards that
+            read them are wrong until this is fixed.
+
+      - alert: FlowMeshReservationSweeperStalled
+        # A heartbeat, not an absence of activity. "No reservations have expired"
+        # is also what a quiet evening looks like, and "reserved units have stopped
+        # rising" is also what a healthy system does between bursts -- so the first
+        # version of this rule used `stock_reserved_total > 0` and would have paged
+        # every night. The sweeper writes a Unix timestamp on every pass whether or
+        # not it reclaimed anything, so staleness of that timestamp means exactly
+        # one thing: the sweeper is not running.
+        expr: >-
+          time() - flowmesh_reservation_sweep_last_success_unixtime > 300
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The reservation expiry sweeper has not run in 5 minutes"
+          description: >-
+            Held stock is not being returned once its TTL passes. Nothing fails
+            immediately -- the symptom is that warehouse availability drifts
+            downward over hours and orders start failing for stock that is on the
+            shelf. Check the inventory worker's sweep loop before restarting it; a
+            restart is safe because expired holds are reclaimed idempotently.

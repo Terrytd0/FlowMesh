@@ -1,0 +1,173 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "flowmesh"
+version = "0.1.0"
+description = "Event-driven order and fraud-detection pipeline for multi-warehouse ecommerce: Kafka, RabbitMQ, gRPC, Prometheus."
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [
+    { name = "Terry Nyirenda" },
+]
+
+dependencies = [
+    # --- Web framework (order ingress + review dashboard) ---
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+
+    # --- Event log (order-events, inventory-events) ---
+    # aiokafka is async-native and speaks the same protocol as kafka-python, so
+    # the same code path is exercised locally and against the compose broker.
+    "aiokafka>=0.12.0",
+
+    # --- Task queue (review queue, notifications) ---
+    # Deliberately a *different* broker from Kafka. ADR-004 explains why the
+    # pipeline needs both rather than one of them twice.
+    "aio-pika>=9.5.0",
+
+    # --- Typed service boundary (fraud scoring) ---
+    "grpcio>=1.68.0",
+    "grpcio-status>=1.68.0",
+    "protobuf>=5.28.0",
+
+    # --- Observability ---
+    "prometheus-client>=0.21.0",
+
+    # --- Data / settings ---
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.5.0",
+    "python-dotenv>=1.0.1",
+
+    # --- Database (system of record for orders, stock, reviews) ---
+    "sqlalchemy>=2.0.0",
+    # SQLAlchemy's asyncio layer needs greenlet for the asyncpg driver; the
+    # `[asyncio]` extra pulls exactly this. Without it `create_async_engine`
+    # fails at construction with an ImportError that names neither SQLAlchemy
+    # nor the driver in the useful part.
+    "sqlalchemy[asyncio]>=2.0.0",
+    "alembic>=1.13.0",
+    "asyncpg>=0.30.0",
+    "psycopg2-binary>=2.9.9",
+    # aiosqlite is not a convenience shim here: it is what lets the load test,
+    # the chaos test and the unit suite exercise the *real* SQL (including the
+    # conditional UPDATE that prevents oversell) with no server running. Same
+    # models, same queries, two dialects -- see docs/architecture.md.
+    "aiosqlite>=0.20.0",
+
+    # --- Auth ---
+    "pyjwt>=2.9.0",
+    "pwdlib[argon2]>=0.2.1",
+    "argon2-cffi>=23.1.0",
+
+    # --- Redis (rate limiting + idempotency-key cache on the public API) ---
+    "redis>=5.2.0",
+
+    # --- HTTP client ---
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+# The LLM reasoner only runs on the ambiguous risk band, which is a small
+# fraction of traffic. Keeping it an extra means the fast path -- and every
+# test -- runs with no LLM dependency installed at all, and no key configured.
+llm = [
+    "openai>=1.50.0",
+]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=5.0.0",
+    # Floor is not arbitrary: `ruff` 0.16 is where `ruff format` started
+    # formatting Python code blocks inside Markdown, so the docs' samples are
+    # formatted rather than hand-aligned; below that `make check` and CI would
+    # disagree about the same file. Keep in step with .pre-commit-config.yaml.
+    "ruff>=0.16.0",
+    "mypy>=1.11.0",
+    "pre-commit>=3.8.0",
+    # grpcio-tools generates the `*_pb2.py` / `*_pb2_grpc.py` modules from
+    # proto/flowmesh/v1/fraud.proto. The generated output is committed
+    # (backend/grpc_service/generated/), so this is a *regeneration* tool
+    # rather than a runtime dependency.
+    "grpcio-tools>=1.68.0",
+    # Protobuf/grpcio emit bare "Exception" subclasses in generated code.
+    "types-protobuf>=4.24.0",
+]
+
+[project.scripts]
+# Console entrypoints mirroring backend/scripts/*.py. The scripts remain
+# runnable as `python -m backend.scripts.<name>`; these are the ergonomic
+# aliases for an installed package.
+flowmesh-api = "backend.scripts.run_api:main"
+flowmesh-fraud = "backend.scripts.run_fraud_server:main"
+flowmesh-orders = "backend.scripts.run_order_consumer:main"
+flowmesh-inventory = "backend.scripts.run_inventory_worker:main"
+flowmesh-review = "backend.scripts.run_review_worker:main"
+flowmesh-loadtest = "backend.scripts.loadtest:main"
+flowmesh-chaos = "backend.scripts.chaos_test:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "integration: exercises a real external dependency -- a live PostgreSQL, a real Kafka broker, a real RabbitMQ, or a real gRPC socket on an ephemeral port (see tests/integration/README.md). Skips itself if the dependency is unreachable rather than failing a plain `pytest` run.",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+# Generated code is not hand-maintained -- never lint or format it. It is
+# regenerable from a .proto schema, and reformatting generated output obscures
+# what protoc actually decided.
+extend-exclude = [
+    "backend/grpc_service/generated",
+    "alembic/versions",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = [
+    "B008", # FastAPI's `Depends(...)`/`Query(...)`/... in argument defaults is the idiomatic pattern, not a mutable-default bug.
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests build fixtures and assert on loosely-typed payloads; the strict
+# unused-argument / private-member rules that make sense in backend/ just
+# produce noise here.
+"tests/**" = ["B011", "F401"]
+# Modules whose docstrings carry markdown tables of design rationale. A table row
+# is a single unbreakable unit -- `ruff format` will not reflow prose inside a
+# docstring, and a wrapped table row is no longer a table row. E501 stays on
+# everywhere else, so this is a targeted exemption rather than a global one.
+"backend/events/bus.py" = ["E501"]
+"backend/events/memory_log.py" = ["E501"]
+"backend/events/kafka_bus.py" = ["E501"]
+"backend/grpc_service/server.py" = ["E501"]
+"backend/loadtest/harness.py" = ["E501"]
+"backend/scripts/chaos_test.py" = ["E501"]
+"backend/scripts/reconcile.py" = ["E501"]
+"backend/loadtest/report.py" = ["E501"]
+"backend/fraud/model.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
+disallow_untyped_defs = true
+# `backend/grpc_service/generated` is machine-written; type-checking it
+# produces errors we cannot fix without hand-editing generated code.
+exclude = [
+    "backend/grpc_service/generated/",
+]
+# tests/ has no __init__.py files (pytest doesn't need them) and has several
+# same-named test modules in different subdirectories; without this, mypy
+# treats them as one top-level module and errors.
+explicit_package_bases = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend"]
+
+[tool.hatch.build.targets.sdist]
+include = ["backend", "proto", "alembic", "docs", "tests", "observability", "README.md"]

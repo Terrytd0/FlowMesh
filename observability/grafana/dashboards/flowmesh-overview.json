@@ -1,0 +1,891 @@
+{
+  "uid": "flowmesh-overview",
+  "title": "FlowMesh — Pipeline Overview",
+  "description": "Throughput, fraud-scoring latency, fraud rate and consumer lag. The four numbers the sprint's success criteria are stated in.",
+  "tags": [
+    "flowmesh",
+    "overview"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "editable": false,
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "flowmesh-prometheus"
+        },
+        "query": "label_values(flowmesh_scoring_latency_seconds_count, transport)",
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "warehouse",
+        "label": "Warehouse",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "flowmesh-prometheus"
+        },
+        "query": "label_values(flowmesh_stock_reserved_total, warehouse)",
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Orders/sec",
+      "description": "Ingested at the public API, divided into approved and held. Rate over a 30s window so the number is legible rather than a single scrape.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(flowmesh_orders_ingested_total{outcome=\"approved\"}[30s])) + sum(rate(flowmesh_orders_ingested_total{outcome=\"review\"}[30s]))",
+          "legendFormat": "orders/sec",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 300
+              },
+              {
+                "color": "green",
+                "value": 450
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "id": 1001
+    },
+    {
+      "type": "stat",
+      "title": "Scoring p95",
+      "description": "Budget is 200ms. Read as a BUCKET UPPER BOUND — the finest statement the histogram can make — which is why the report and this panel cannot disagree.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(flowmesh_scoring_latency_seconds_bucket{transport=~\"$service\"}[30s])) by (le))",
+          "legendFormat": "p95",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.15
+              },
+              {
+                "color": "red",
+                "value": 0.2
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "id": 1002
+    },
+    {
+      "type": "stat",
+      "title": "Fraud rate",
+      "description": "High band as a share of all scored orders. DERIVED from the band counter rather than kept as its own gauge, so the two can never disagree.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(flowmesh_orders_scored_total{band=\"high\"}[5m])) / clamp_min(sum(rate(flowmesh_orders_scored_total[5m])), 0.001)",
+          "legendFormat": "fraud rate",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "id": 1003
+    },
+    {
+      "type": "stat",
+      "title": "Total oversells",
+      "description": "Must be zero. Not a rate, not a threshold — the inventory invariant is absolute, so this panel's colour is the alarm.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(flowmesh_oversell_rejections_total[1h]))",
+          "legendFormat": "rejections",
+          "refId": "A"
+        },
+        {
+          "expr": "clamp_min(sum(flowmesh_oversell_rejections_total), 0)",
+          "legendFormat": "total",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 50
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "no data"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "id": 1004
+    },
+    {
+      "type": "timeseries",
+      "title": "Fraud-scoring latency, by transport",
+      "description": "Split by transport on purpose: if the 'grpc' series goes flat, the client has fallen back to in-process scoring, and the latency improvement is a fallback rather than an optimisation.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(flowmesh_scoring_latency_seconds_bucket{transport=~\"$service\"}[30s])) by (le, transport))",
+          "legendFormat": "p50 {{transport}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(flowmesh_scoring_latency_seconds_bucket{transport=~\"$service\"}[30s])) by (le, transport))",
+          "legendFormat": "p95 {{transport}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(flowmesh_scoring_latency_seconds_bucket{transport=~\"$service\"}[30s])) by (le, transport))",
+          "legendFormat": "p99 {{transport}}",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "max",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 1005
+    },
+    {
+      "type": "timeseries",
+      "title": "Order outcomes",
+      "description": "Where orders go. A rising 'review' share under clean traffic means the model or a threshold moved, not that customers got riskier.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(flowmesh_orders_scored_total{band=\"low\"}[30s])) by (band)",
+          "legendFormat": "{{band}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(flowmesh_orders_scored_total[30s])) by (band)",
+          "legendFormat": "{{band}} (rate)",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 1006
+    },
+    {
+      "id": 100,
+      "type": "heatmap",
+      "title": "Score distribution",
+      "description": "Where scores actually land, as a histogram of the flowmesh_score_distribution buckets over the dashboard's time range. A fraud *rate* on its own is ambiguous: 4% of orders held for review is healthy if scores spread across the bands and alarming if they have collapsed onto one. The vertical lines are the low and high thresholds from settings, so the bands are visible and not inferred. If the model is degraded, this goes flat at the fallback's score and the Fraud-rate panel rises at the same time -- which is the signature to look for.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(flowmesh_score_distribution_bucket[$__range])) by (le)",
+          "format": "heatmap",
+          "legendFormat": "{{le}}"
+        }
+      ],
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "cellValues": {
+          "unit": "short"
+        },
+        "color": {
+          "mode": "scheme",
+          "scheme": "Turbo",
+          "exponent": 0.5,
+          "fill": "dark-orange",
+          "reverse": false,
+          "steps": 64
+        },
+        "exemplars": {
+          "color": "rgba(255,0,255,0.7)"
+        },
+        "filterValues": {
+          "le": 1e-09
+        },
+        "legend": {
+          "show": true
+        },
+        "rowsFrame": {
+          "layout": "auto",
+          "value": "score"
+        },
+        "tooltip": {
+          "mode": "single",
+          "showColorScale": false,
+          "yHistogram": false
+        },
+        "yAxis": {
+          "axisPlacement": "left",
+          "reverse": false,
+          "unit": "short"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Consumer lag, by consumer group",
+      "description": "Records behind each group. NOT summed across groups: one panel per group, because a summed lag across two groups produces a number that means nothing. The second series is the consumption rate for the same groups: read together, a lag curve that is flat while the rate is high means the group is draining a backlog, while lag rising against a flat rate means the group is stuck on one message.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "targets": [
+        {
+          "expr": "max by (group, topic) (flowmesh_consumer_lag)",
+          "legendFormat": "{{group}} / {{topic}}",
+          "refId": "A"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(flowmesh_events_consumed_total{topic=~\"$topic\"}[1m])) by (group, topic)",
+          "legendFormat": "{{group}} consume/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "axisPlacement": "right"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 500
+              },
+              {
+                "color": "red",
+                "value": 2000
+              }
+            ]
+          },
+          "thresholdsStyle": {
+            "mode": "area"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ]
+        }
+      },
+      "id": 1008
+    },
+    {
+      "type": "timeseries",
+      "title": "Review queue depth (ready / unacked / dead-letter)",
+      "description": "Three separate series because they mean different things: ready is a backlog, unacked is slow handlers, and dead-letter is poison messages. A single summed gauge hides all three.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "targets": [
+        {
+          "expr": "flowmesh_queue_depth{state=\"ready\"}",
+          "legendFormat": "{{queue}} ready",
+          "refId": "A"
+        },
+        {
+          "expr": "flowmesh_queue_depth{state=\"unacked\"}",
+          "legendFormat": "{{queue}} unacked",
+          "refId": "B"
+        },
+        {
+          "expr": "flowmesh_queue_depth{state=\"dead_letter\"}",
+          "legendFormat": "{{queue}} DEAD",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*DEAD.*"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right"
+        }
+      },
+      "id": 1009
+    },
+    {
+      "type": "timeseries",
+      "title": "Stock reserved / released, by warehouse",
+      "description": "Reserved minus released should track nothing in particular, but a single warehouse rising without bound means reservations are being created and never released — the expiry sweeper is not running.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "targets": [
+        {
+          "expr": "rate(flowmesh_stock_reserved_total{warehouse=~\"$warehouse\"}[5m])",
+          "legendFormat": "reserved {{warehouse}}",
+          "refId": "A"
+        },
+        {
+          "expr": "-rate(flowmesh_stock_released_total{warehouse=~\"$warehouse\"}[5m])",
+          "legendFormat": "released {{warehouse}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      },
+      "id": 1010
+    },
+    {
+      "type": "timeseries",
+      "title": "Redeliveries and duplicates",
+      "description": "The event log's at-least-once delivery, made visible. Duplicates are SKIPPED by the idempotency ledger rather than being errors; redeliveries are retried. A spike in redeliveries with flat throughput is a failing dependency downstream.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(flowmesh_events_redelivered_total[1m])) by (group, topic)",
+          "legendFormat": "redelivered {{group}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(flowmesh_events_deduplicated_total[1m])) by (topic)",
+          "legendFormat": "deduplicated {{topic}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        }
+      },
+      "id": 1011
+    },
+    {
+      "type": "timeseries",
+      "title": "Scoring errors and degraded decisions",
+      "description": "Degraded means the real weights failed to load and the fallback is deciding. Every degraded order is held for review, so a non-zero line here should coincide with a rising review queue.",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 28
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(flowmesh_scoring_errors_total[1m])) by (reason)",
+          "legendFormat": "error: {{reason}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(flowmesh_scoring_degraded_total[1m])) by (reason)",
+          "legendFormat": "degraded: {{reason}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "thresholdsStyle": {
+            "mode": "area"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "id": 1012
+    },
+    {
+      "type": "timeseries",
+      "title": "LLM reasoner calls",
+      "description": "Should be near zero unless FLOWMESH_LLM_ENABLED is set. With it set, still only for the ambiguous band — a rate comparable to total throughput means something is wrong with the band logic.",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 28
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(flowmesh_llm_calls_total[5m])) by (outcome)",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(flowmesh_orders_scored_total[5m]))",
+          "legendFormat": "orders scored (for scale)",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "id": 1013
+    },
+    {
+      "type": "timeseries",
+      "title": "Database and inventory write latency",
+      "description": "On PostgreSQL a row lock is held to end-of-transaction, so a slow write here shows up as stalled reservations rather than as slow scoring.",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 28
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(flowmesh_db_write_seconds_bucket[30s])) by (le, table))",
+          "legendFormat": "db p95 {{table}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(flowmesh_inventory_apply_seconds_bucket[30s])) by (le))",
+          "legendFormat": "inventory apply p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(flowmesh_offset_commit_seconds_bucket[30s])) by (le))",
+          "legendFormat": "offset commit p95",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "id": 1014
+    },
+    {
+      "type": "timeseries",
+      "title": "Instrumentation failures",
+      "description": "MUST be zero. A non-zero value means a metric label set has drifted, and every panel reading that metric family is silently empty — which is exactly how the p95 histogram stayed empty once.",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(flowmesh_instrumentation_failures_total[15m]))",
+          "legendFormat": "failures",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "always"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "thresholdsStyle": {
+            "mode": "line"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "id": 1015
+    }
+  ]
+}

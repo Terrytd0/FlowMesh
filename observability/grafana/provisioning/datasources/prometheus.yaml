@@ -1,0 +1,23 @@
+# Prometheus datasource for the provisioned dashboards.
+#
+# `uid` is pinned rather than left to be generated: every dashboard JSON refers to
+# this uid, and a generated one changes if the file is renamed or reordered.
+# `jsonData.timeInterval` matches prometheus.yml's 5s scrape_interval so a panel
+# cannot ask for a resolution finer than the data has.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    uid: flowmesh-prometheus
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 5s
+      # The dashboards deliberately use `rate()` and `increase()` over
+      # `irate()`: a 5s scrape makes `irate` read a single sample pair, which is
+      # one scrape's noise rather than a rate.
+      httpMethod: POST

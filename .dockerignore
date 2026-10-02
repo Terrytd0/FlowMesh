@@ -1,0 +1,66 @@
+# Build context exclusions.
+#
+# Without this, every `docker build` uploads the whole repo -- including `.venv`,
+# which on this machine is over a gigabyte of Windows binaries -- and then throws
+# most of it away. It also makes the build context include the local database files
+# and generated reports, so an image's contents change depending on what happens to
+# be in the working directory.
+
+# Virtual environments. `.venv` is a Windows build here and a Linux one in the
+# image; copying it in is at best dead weight and at worst a shadowing hazard, since
+# `/app/.venv` would be found before the installed `/opt/venv`.
+.venv/
+venv/
+env/
+ENV/
+
+# Version control and CI. `.git` in particular is large and never needed: the build
+# copies named directories, not the repository.
+.git/
+.gitignore
+.github/
+
+# Local data. `data/runtime/` holds SQLite files, load-test output and reconciliation
+# JSON from previous runs, and must never be copied into an image.
+#
+# `data/*` and `!data/model` rather than `data/` and `!data/model`: .dockerignore
+# cannot re-include a file whose *parent* directory is excluded, so excluding `data/`
+# and then re-adding the subdirectory silently does nothing -- the build fails with
+# `COPY data/model: not found`, which reads like a missing file rather than like a
+# negation that never applied. `data/model/` is a runtime input and is copied
+# explicitly by the Dockerfile.
+data/*
+!data/model
+data/runtime/
+
+# Generated reports and caches. Reproduced by `make evidence` on demand, and stale
+# copies in an image are worse than none: a report that contradicts the code it
+# shipped with is a claim nobody can check.
+docs/
+!docs/
+data/runtime/reports/
+
+# Python build and cache artefacts. Present in a working tree after running the
+# suite locally, and large.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Generated gRPC stubs are committed on purpose (see CLAUDE.md: nothing warns you if
+# they go stale), so they are deliberately NOT excluded.
+
+# Local environment and editor files.
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

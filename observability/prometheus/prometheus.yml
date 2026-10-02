@@ -1,0 +1,71 @@
+# Prometheus scrape config for FlowMesh.
+#
+# Three things here are deliberate and worth not "tidying up":
+#
+# 1. `scrape_interval: 5s`, not the 15s default. The load test runs for ten seconds
+#    and the dashboards have to show the shape of it. Fifteen seconds would give two
+#    or three points across the whole run.
+#
+# 2. `honor_labels: false` (the default, stated because it matters). Every service
+#    exports the same metric names with the same label *keys*, which is the whole
+#    point of `backend/observability/metrics.py`. If a job's own labels were
+#    preferred, the `instance` label would be lost and every service's numbers would
+#    be summed into one series per metric.
+#
+# 3. Each consumer is scraped separately rather than aggregated behind one job.
+#    `flowmesh_consumer_lag` is only meaningful per consumer group, and summing
+#    three consumers' lag into one panel produces a number that means nothing.
+
+global:
+  scrape_interval: 5s
+  scrape_timeout: 4s
+  evaluation_interval: 5s
+  external_labels:
+    cluster: flowmesh-dev
+    project: flowmesh
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: flowmesh-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+        labels:
+          service: api
+
+  # 50055, not 50052. The scorer also serves gRPC on 50052 (`grpc_server_port`), and
+  # pointing a scrape at the gRPC port yields a target that is permanently down with
+  # a 400 on every interval -- a silent hole in exactly the series the scoring panels
+  # read. See `Settings.fraud_metrics_port`.
+  - job_name: flowmesh-fraud
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["fraud:50055"]
+        labels:
+          service: fraud
+
+  - job_name: flowmesh-orders
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["orders:50052"]
+        labels:
+          service: orders
+          consumer_group: order-processor
+
+  - job_name: flowmesh-inventory
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["inventory:50053"]
+        labels:
+          service: inventory
+          consumer_group: inventory-worker
+
+  - job_name: flowmesh-review
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["review:50054"]
+        labels:
+          service: review
+          consumer_group: review-worker

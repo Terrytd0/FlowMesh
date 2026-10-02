@@ -1,0 +1,263 @@
+# FlowMesh — the full local stack.
+#
+# Kafka runs in KRaft mode (no ZooKeeper): one fewer container, one fewer thing to
+# version-skew, and ZooKeeper has been deprecated since 2020.
+#
+# The consumers are *separate services*, not threads of the API. Three reasons that
+# are about failure isolation rather than taste:
+#
+#   - a consumer crash loop leaves customers able to place orders (they queue up,
+#     and the lag gauge says so)
+#   - scoring concurrency and API concurrency are tuned against different limits, and
+#     one process means one scaling decision for both
+#   - restarting a consumer replays its uncommitted backlog, which should not happen
+#     on every deploy
+#
+# Services whose replicas do not exist yet carry a comment saying where they would
+# go, rather than pretending a single instance is a scalable topology.
+
+name: flowmesh
+
+x-app-common: &app-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment: &app-env
+    FLOWMESH_APP_ENV: development
+    FLOWMESH_LOG_LEVEL: INFO
+    FLOWMESH_DATABASE_URL: postgresql+asyncpg://flowmesh:flowmesh@postgres:5432/flowmesh
+    FLOWMESH_REDIS_URL: redis://redis:6379/0
+    FLOWMESH_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    FLOWMESH_RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    FLOWMESH_GRPC_CLIENT_TARGET: fraud:50052
+    FLOWMESH_AUTH_ENABLED: "true"
+    FLOWMESH_JWT_SECRET: ${FLOWMESH_JWT_SECRET:-dev-only-insecure-secret-change-me}
+    FLOWMESH_METRICS_ENABLED: "true"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    kafka:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  # ----------------------------------------------------------------- infra
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: flowmesh
+      POSTGRES_PASSWORD: flowmesh
+      POSTGRES_DB: flowmesh
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # `pg_isready` alone returns true before the database accepts connections
+      # during initdb. Pointing it at the specific database and user is what makes
+      # it meaningful -- and `depends_on: service_healthy` gates every app service on
+      # it, so a false positive here is a race in every container's startup.
+      test: ["CMD-SHELL", "pg_isready -U flowmesh -d flowmesh"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,CONTROLLER://kafka:29093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # Single-broker dev cluster: replication factor 1 is the only option, and the
+      # app's `ensure_topics` uses it. A production topic would use 3.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: flowmesh-dev-cluster
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafkadata:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # prometheus.yml points `rule_files` at this directory. Mounted whole rather
+      # than file-by-file so adding an alert does not also mean editing the compose
+      # file. The `:ro` matters: Prometheus hot-reloads rules on change, and a
+      # writable bind mount lets a stray editor rewrite the alerting rules that
+      # page someone.
+      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
+    ports:
+      - "9090:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=6h
+      # Reload on change, so an edited alert takes effect without restarting the
+      # container and losing the TSDB.
+      - --web.enable-lifecycle
+    depends_on:
+      api:
+        condition: service_started
+      fraud:
+        condition: service_started
+      orders:
+        condition: service_started
+      inventory:
+        condition: service_started
+      review:
+        condition: service_started
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Provisioned dashboards are read-only in the UI, which stops an accidental
+      # edit from being lost on the next container restart.
+      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 5s
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  # ----------------------------------------------------------------- app
+  api:
+    <<: *app-common
+    command:
+      ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+
+  fraud:
+    <<: *app-common
+    command: ["python", "-m", "backend.scripts.run_fraud_server"]
+    environment:
+      <<: *app-env
+      # 50055, not the shared 50052. This one process serves gRPC scoring *and*
+      # HTTP /metrics, so it needs two ports; `Settings.fraud_metrics_port` and
+      # the `flowmesh-fraud` scrape target in prometheus.yml both key off this
+      # number. Stated here as well as in Settings so the compose file is the
+      # place to look when someone wonders why the scorer exposes two ports.
+      FLOWMESH_FRAUD_METRICS_PORT: "50055"
+    ports:
+      - "50052:50052"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      # The scorer's own health, over its own protocol. The Dockerfile's HTTP
+      # check does not apply here -- this service speaks gRPC, not HTTP -- which is
+      # exactly why a per-service healthcheck is declared rather than inherited.
+      test:
+        [
+          "CMD", "python", "-c",
+          "import grpc; from backend.grpc_service.generated import fraud_pb2, fraud_pb2_grpc; c=grpc.insecure_channel('localhost:50052'); print(fraud_pb2_grpc.FraudScoringStub(c).Health(fraud_pb2.HealthRequest(), timeout=3).ready)"
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  orders:
+    <<: *app-common
+    command: ["python", "-m", "backend.scripts.run_order_consumer"]
+    environment:
+      <<: *app-env
+      FLOWMESH_METRICS_PORT: "50052"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      fraud:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+    # Scale with `--scale orders=3` for partition assignment and lag. The six
+    # partitions in settings leave headroom above three consumers.
+
+  inventory:
+    <<: *app-common
+    command: ["python", "-m", "backend.scripts.run_inventory_worker"]
+    environment:
+      <<: *app-env
+      FLOWMESH_METRICS_PORT: "50053"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+
+  review:
+    <<: *app-common
+    command: ["python", "-m", "backend.scripts.run_review_worker"]
+    environment:
+      <<: *app-env
+      FLOWMESH_METRICS_PORT: "50054"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+
+volumes:
+  pgdata:
+  kafkadata:
+  rabbitmqdata:

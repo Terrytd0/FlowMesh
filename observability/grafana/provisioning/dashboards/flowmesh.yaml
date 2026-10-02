@@ -1,0 +1,23 @@
+# Grafana dashboard provider.
+#
+# `updateIntervalSeconds: 10` rather than Grafana's 30s default: the load test runs
+# for ten seconds, and a 30-second refresh would show one or two frames of the whole
+# run. Slower than Prometheus's 5s scrape, because re-rendering a dashboard more
+# often than the data changes just costs CPU.
+#
+# `allowUiUpdates: false` marks provisioned dashboards read-only, so an edit in the
+# browser is not silently lost on the next restart.
+
+apiVersion: 1
+
+providers:
+  - name: flowmesh
+    orgId: 1
+    folder: FlowMesh
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
