@@ -95,9 +95,18 @@ jobs:
         # Autogenerate a revision into a temp file and fail if it is non-empty. A
         # model changed without a migration, and the next `make migrate` would
         # silently do nothing.
+        #
+        # The URL is set here for the same reason the integration step sets it.
+        # Without it Alembic falls back to the Settings default, whose host is
+        # `postgres` -- the docker-compose service name. A GitHub runner does not
+        # resolve service-container names, so the job died with "could not
+        # translate host name postgres to address", which reads like a
+        # migration problem and is not one.
         run: |
           uv run alembic upgrade head
           uv run alembic check
+        env:
+          FLOWMESH_DATABASE_URL: postgresql+asyncpg://flowmesh:flowmesh@localhost:5432/flowmesh_test
 
   container:
     name: image builds and is healthy
