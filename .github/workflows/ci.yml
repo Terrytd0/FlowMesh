@@ -144,7 +144,12 @@ jobs:
         # Regenerates into a scratch directory and fails if protoc errors. Catches a
         # `.proto` edit that the committed stubs were never regenerated for, which
         # otherwise only shows up as an import error in production.
+        #
+        # `protoc` does not create its output directory; it fails with
+        # "/tmp/proto-check/: No such file or directory" if it is absent, which
+        # reads like a proto error and is not one.
         run: |
+          mkdir -p /tmp/proto-check
           uvx --from grpcio-tools==1.68.0 python -m grpc_tools.protoc \
             -I proto \
             --python_out=/tmp/proto-check \

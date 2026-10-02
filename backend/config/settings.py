@@ -232,15 +232,25 @@ class Settings(BaseSettings):
         Derived from `database_url` by swapping the async driver for a blocking
         one when not set explicitly, so there is exactly one place a database
         DSN is configured.
+
+        The blocking driver is named rather than stripped. SQLAlchemy resolves a
+        bare `postgresql://` to psycopg (v3), and this project depends on
+        psycopg2, so the stripped form raised `ModuleNotFoundError: No module
+        named 'psycopg'` on the first connection. Nothing local ever saw it: the
+        default database is SQLite, and the only caller is Alembic, so it
+        surfaced for the first time as a red CI job running
+        `alembic upgrade head` against PostgreSQL.
         """
         if self.database_url_sync:
             return self.database_url_sync
-        return (
-            self.database_url.replace("+asyncpg", "")
-            .replace("postgresql+psycopg2", "postgresql")
-            .replace("+aiosqlite", "")
-            .replace("sqlite+aiosqlite", "sqlite")
-        )
+        scheme, separator, remainder = self.database_url.partition("://")
+        if not separator:
+            return self.database_url
+        if scheme.startswith("postgresql"):
+            return f"postgresql+psycopg2://{remainder}"
+        if scheme.startswith("sqlite"):
+            return f"sqlite://{remainder}"
+        return self.database_url
 
     @property
     def ambiguous_fraud_band(self) -> tuple[float, float]:
